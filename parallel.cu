@@ -207,13 +207,12 @@ long get_floored_mean(int *n, int length) {
 	return sum / length;
 }
 
-__global__ void convolution(Matrix* d_kernel, Matrix* d_targets, Matrix* d_results, int num_target) {
+__global__ void convolution(Matrix* d_kernel, Matrix* d_targets, Matrix* d_results, int blockLen) {
     // Calculate global thread pos
 
     int currBlock = blockIdx.x;
     int t_row = threadIdx.x;
     int t_col = threadIdx.y;
-    int blockLen = num_target;
 
     // printf("%d\n", d_targets[currBlock].mat[0][0]);
     
@@ -258,9 +257,6 @@ int main() {
 	// read each target matrix, compute their convolution matrices, and compute their data ranges
 	for (int i = 0; i < num_targets; i++) {
 		arr_mat[i] = input_matrix(target_row, target_col);
-    // init_matrix(&arr_res[i], target_row-kernel_row+1, target_col-kernel_col+1);
-		// arr_mat[i] = convolution(&kernel, &arr_mat[i]);
-		// arr_range[i] = get_matrix_datarange(&arr_mat[i]); 
 	}
 
     // device memory allocation
@@ -272,12 +268,12 @@ int main() {
     cudaMemcpy(d_targets, arr_mat, num_targets*sizeof(Matrix), cudaMemcpyHostToDevice);
 
     int THREADS = 16;
-    int BLOCKS = num_targets;
+	int BLOCKS = num_targets;
 
     dim3 block_dim(THREADS, THREADS);
     dim3 grid_dim(BLOCKS);
 
-    convolution<<<grid_dim, block_dim>>>(d_kernel, d_targets, d_results, BLOCKS);
+    convolution<<<grid_dim, block_dim>>>(d_kernel, d_targets, d_results, THREADS);
 
     cudaDeviceSynchronize();
 
@@ -288,7 +284,6 @@ int main() {
 		}
 
     for (int i = 0; i < num_targets; i++) {
-      // print_mat(&arr_res[i]);
       arr_range[i] = get_matrix_datarange(&arr_res[i]); 
     }
 	// sort the data range array
