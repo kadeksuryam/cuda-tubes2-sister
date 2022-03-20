@@ -156,15 +156,43 @@ void merge_array(int *n, int left, int mid, int right) {
  *
  * Sorts array n with merge sort algorithm
  * */
-void merge_sort(int *n, int left, int right) {
-	if (left < right) {
-		int mid = left + (right - left) / 2;
+__global__ void merge_sort(int *n, int *m, int left, int right) {
+		
+	int mid = (left + right)/2;
+	int i = left;
+	int j = right;
+	int index;
+	int x = right - left;
 
-		merge_sort(n, left, mid);
-		merge_sort(n, mid + 1, right);
+	if(x < 2){
+      return;
+	}
 
-		merge_array(n, left, mid, right);
-	}	
+	cudaStream_t s,s1;
+
+	cudaStreamCreateWithFlags(&s,cudaStreamNonBlocking);
+	merge_sort<<< 1, 1, 0, s >>>(n, m, left, mid);
+	cudaStreamDestroy(s);
+
+	cudaStreamCreateWithFlags(&s1,cudaStreamNonBlocking);
+	merge_sort<<< 1, 1, 0, s1 >>>(n, m, mid, right);
+	cudaStreamDestroy(s1);
+	
+	cudaDeviceSynchronize();
+
+	for (index = left; index < right; index++) {
+		if (i < mid && (j >= right || n[i] <= n[j])){
+			m[index] = n[i];
+			i++;
+		}else{
+			m[index] = n[j];
+			j++;
+		}
+	}
+
+	for(index = left; index < right; index++){
+		n[index] = m[index];
+  }
 }
  
 
@@ -311,7 +339,8 @@ int main() {
 
 
 	// sort the data range array
-	merge_sort(arr_range, 0, num_targets - 1);
+	int arr_range1[num_targets];
+	merge_sort<<<grid_dim_dr, block_dim_dr>>>(arr_range, arr_range1, 0, num_targets - 1);
 	
 	int median = get_median(arr_range, num_targets);	
 	int floored_mean = get_floored_mean(arr_range, num_targets); 
