@@ -1,6 +1,5 @@
-%%writefile parallel.cu
-
-// parallel.c
+%%writefile serial.cu
+// serial.c
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,7 +80,7 @@ void print_matrix(Matrix *m) {
  * Returns the range between maximum and minimum
  * element of a matrix
  * */
-__device__ int get_matrix_datarange(Matrix *m) {
+int get_matrix_datarange(Matrix *m) {
 	int max = DATAMIN;
 	int min = DATAMAX;
 	for (int i = 0; i < m->row_eff; i++) {
@@ -95,13 +94,14 @@ __device__ int get_matrix_datarange(Matrix *m) {
 	return max - min;
 }
 
+
 /*
  * Function supression_op
  *
  * Returns the sum of intermediate value of special multiplication
  * operation where kernel[0][0] corresponds to target[row][col]
  * */
-__device__ int supression_op(Matrix *kernel, Matrix *target, int row, int col) {
+int supression_op(Matrix *kernel, Matrix *target, int row, int col) {
 	int intermediate_sum = 0;
 	for (int i = 0; i < kernel->row_eff; i++) {
 		for (int j = 0; j < kernel->col_eff; j++) {
@@ -110,6 +110,29 @@ __device__ int supression_op(Matrix *kernel, Matrix *target, int row, int col) {
 	}
 
 	return intermediate_sum;
+}
+
+
+/* 
+ * Function convolution
+ *
+ * Return the output matrix of convolution operation
+ * between kernel and target
+ * */
+Matrix convolution(Matrix *kernel, Matrix *target) {
+	Matrix out;
+	int out_row_eff = target->row_eff - kernel->row_eff + 1;
+	int out_col_eff = target->col_eff - kernel->col_eff + 1;
+	
+	init_matrix(&out, out_row_eff, out_col_eff);
+
+	for (int i = 0; i < out.row_eff; i++) {
+		for (int j = 0; j < out.col_eff; j++) {
+			out.mat[i][j] = supression_op(kernel, target, i, j);
+		}
+	}
+
+	return out;
 }
 
 
@@ -156,43 +179,15 @@ void merge_array(int *n, int left, int mid, int right) {
  *
  * Sorts array n with merge sort algorithm
  * */
-__global__ void merge_sort(int *n, int *m, int left, int right) {
-		
-	int mid = (left + right)/2;
-	int i = left;
-	int j = right;
-	int index;
-	int x = right - left;
+void merge_sort(int *n, int left, int right) {
+	if (left < right) {
+		int mid = left + (right - left) / 2;
 
-	if(x < 2){
-      return;
-	}
+		merge_sort(n, left, mid);
+		merge_sort(n, mid + 1, right);
 
-	cudaStream_t s,s1;
-
-	cudaStreamCreateWithFlags(&s,cudaStreamNonBlocking);
-	merge_sort<<< 1, 1, 0, s >>>(n, m, left, mid);
-	cudaStreamDestroy(s);
-
-	cudaStreamCreateWithFlags(&s1,cudaStreamNonBlocking);
-	merge_sort<<< 1, 1, 0, s1 >>>(n, m, mid, right);
-	cudaStreamDestroy(s1);
-	
-	cudaDeviceSynchronize();
-
-	for (index = left; index < right; index++) {
-		if (i < mid && (j >= right || n[i] <= n[j])){
-			m[index] = n[i];
-			i++;
-		}else{
-			m[index] = n[j];
-			j++;
-		}
-	}
-
-	for(index = left; index < right; index++){
-		n[index] = m[index];
-  }
+		merge_array(n, left, mid, right);
+	}	
 }
  
 
@@ -234,42 +229,6 @@ long get_floored_mean(int *n, int length) {
 	return sum / length;
 }
 
-__global__ void convolution(Matrix* d_kernel, Matrix* d_targets, Matrix* d_results, int blockLen) {
-    // Calculate global thread pos
-
-    int currBlock = blockIdx.x;
-    int t_row = threadIdx.x;
-    int t_col = threadIdx.y;
-
-    // printf("%d\n", d_targets[currBlock].mat[0][0]);
-    
-    int rowTarget = d_targets[currBlock].row_eff;
-    int colTarget = d_targets[currBlock].col_eff;
-
-    if(t_row < rowTarget && t_col < colTarget) {
-        d_results[currBlock].mat[t_row][t_col] = supression_op(d_kernel, &d_targets[currBlock], t_row, t_col);
-    }
-    
-    for(int i=t_row;i<rowTarget;i+=blockLen) {
-        for(int j=t_col;j<colTarget;j+=blockLen) {
-            d_results[currBlock].mat[i][j] = supression_op(d_kernel, &d_targets[currBlock], i, j);
-        }
-    }
-
-		d_results[currBlock].row_eff = rowTarget-d_kernel->row_eff+1;
-		d_results[currBlock].col_eff = colTarget-d_kernel->col_eff+1;
-}
-
-__global__ void datarange(Matrix* d_conv_results, int* d_range_results, int numTargets) {
-    int currBlock = blockIdx.x;
-    int nThreads = blockDim.x*blockDim.x;
-    int currThread = currBlock*nThreads + blockDim.x*threadIdx.y + threadIdx.x;
-
-    if(currThread < numTargets) {
-        d_range_results[currThread] = get_matrix_datarange(&d_conv_results[currThread]);
-    }
-}
-
 void print_mat(Matrix* mat) {
     for(int i=0;i<mat->row_eff;i++) {
         for(int j=0;j<mat->col_eff;j++) {
@@ -278,6 +237,7 @@ void print_mat(Matrix* mat) {
         printf("\n");
     }
 }
+
 
 // main() driver
 int main() {
@@ -291,56 +251,18 @@ int main() {
 	// initialize array of matrices and array of data ranges (int)
 	scanf("%d %d %d", &num_targets, &target_row, &target_col);
 	Matrix* arr_mat = (Matrix*)malloc(num_targets * sizeof(Matrix));
-    Matrix* arr_res = (Matrix*)malloc(num_targets * sizeof(Matrix));
 	int arr_range[num_targets];
 	
 	// read each target matrix, compute their convolution matrices, and compute their data ranges
 	for (int i = 0; i < num_targets; i++) {
 		arr_mat[i] = input_matrix(target_row, target_col);
+		arr_mat[i] = convolution(&kernel, &arr_mat[i]);
+		arr_range[i] = get_matrix_datarange(&arr_mat[i]);
+    // print_mat(&arr_mat[i]); 
 	}
 
-    // device memory allocation
-    Matrix *d_kernel; Matrix *d_targets; Matrix *d_conv_results;
-    cudaMalloc((void **) &d_kernel, sizeof(Matrix));
-    cudaMalloc((void **) &d_targets, num_targets*sizeof(Matrix));
-    cudaMalloc((void **) &d_conv_results, num_targets*sizeof(Matrix));
-    cudaMemcpy(d_kernel, &kernel, sizeof(Matrix), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_targets, arr_mat, num_targets*sizeof(Matrix), cudaMemcpyHostToDevice);
-
-    int THREADS_CONV = 16;
-	  int BLOCKS_CONV = num_targets;
-
-    dim3 block_dim_conv(THREADS_CONV, THREADS_CONV);
-    dim3 grid_dim_conv(BLOCKS_CONV);
-
-    convolution<<<grid_dim_conv, block_dim_conv>>>(d_kernel, d_targets, d_conv_results, THREADS_CONV);
-
-    cudaDeviceSynchronize();
-
-    cudaMemcpy(arr_res, d_conv_results, num_targets*sizeof(Matrix), cudaMemcpyDeviceToHost);
-
-    // Datarange ops
-    // for (int i = 0; i < num_targets; i++) {
-    //     arr_range[i] = get_matrix_datarange(&arr_res[i]); 
-    // }
-    int* d_range_results;
-    cudaMalloc((void **) &d_range_results, num_targets*sizeof(int));
-
-    int THREADS_DR = 16;
-    int BLOCKS_DR = ceil((double)num_targets/(double)THREADS_DR*THREADS_DR);
-
-    dim3 block_dim_dr(THREADS_DR, THREADS_DR);
-    dim3 grid_dim_dr(BLOCKS_DR);
-
-    datarange<<<grid_dim_dr, block_dim_dr>>>(d_conv_results, d_range_results, num_targets);
-
-    cudaDeviceSynchronize();
-    cudaMemcpy(arr_range, d_range_results, num_targets*sizeof(int), cudaMemcpyDeviceToHost);
-
-
 	// sort the data range array
-	int arr_range1[num_targets];
-	merge_sort<<<grid_dim_dr, block_dim_dr>>>(arr_range, arr_range1, 0, num_targets - 1);
+	merge_sort(arr_range, 0, num_targets - 1);
 	
 	int median = get_median(arr_range, num_targets);	
 	int floored_mean = get_floored_mean(arr_range, num_targets); 
